@@ -13,8 +13,17 @@ async fn raknet_ping() -> Result<()> {
 }
 
 #[tokio::test]
+async fn elementx_query() -> Result<()> {
+    let client = Client::new("127.0.0.1:19132").await?;
+    let start = Instant::now();
+    let data = client.elementx_query().await?;
+    println!("long finished in {}ms\n{:?}", start.elapsed().as_millis(), data);
+    Ok(())
+}
+
+#[tokio::test]
 async fn long_query() -> Result<()> {
-    let client = Client::new("dcfac.us.to:19132").await?;
+    let client = Client::new("127.0.0.1:19132").await?;
     let start = Instant::now();
     let data = client.long_query().await?;
     println!("long finished in {}ms\n{:?}", start.elapsed().as_millis(), data);

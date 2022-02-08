@@ -23,12 +23,14 @@ use std::sync::Arc;
 use tokio::net::{UdpSocket, ToSocketAddrs};
 use std::io::{Result, ErrorKind, Error, Write, Cursor};
 use hex::FromHex;
-use crate::model::{ShortQuery, LongQuery, packet, RakNetPong};
+use crate::model::{ShortQuery, LongQuery, packet, RakNetPong, ElementXQuery};
+use crate::model::elementx_json::Game;
 use std::time::{SystemTime, UNIX_EPOCH};
 use byteorder::{WriteBytesExt, BigEndian, LittleEndian, ReadBytesExt};
 use rand::Rng;
 use std::str;
 use std::collections::HashMap;
+use std::fmt::format;
 use tokio::sync::Mutex;
 use crate::utils::read_nulltermed_str;
 
@@ -156,6 +158,93 @@ impl<A: ToSocketAddrs> Client<A> {
             port: None,
             port_v6: None
         })
+    }
+
+    pub async fn elementx_query(&self) -> Result<ElementXQuery> {
+        let mut random = rand::thread_rng();
+        let ses_id: i32 = random.gen();
+        let challenge_token = self.gen_challenge_token(ses_id).await?;
+        //Send Request
+        {
+            let mut buf: Vec<u8> = Vec::new();
+            // Write Query Magic
+            buf.write_u16::<BigEndian>(packet::MAGIC)?;
+            // Write STAT for the packet id
+            buf.write_u8(packet::STAT)?;
+            // Write Session Id
+            buf.write_i32::<BigEndian>(ses_id & 0x0F0F0F0F)?;
+            // Write challenge token
+            buf.write_i32::<BigEndian>(challenge_token)?;
+            // Padding
+            buf.write_all([0x00].repeat(4).as_slice())?;
+            // Send STAT request to remote
+            self.socket.send_to(buf.as_slice(), &self.remote).await?;
+        };
+        //Reading
+        let mut buf = [0u8; u16::MAX as usize];
+        let len = self.socket.recv(&mut buf).await?;
+        //check if the packet id is STAT
+        match buf[0] {
+            packet::STAT => {
+                let data = &buf[16..=len];
+                let mut reg_data = &buf[16..=len];
+                let players: Mutex<Vec<String>> = Mutex::new(Vec::new());
+                let raw_data: Mutex<HashMap<&str, String>> = Mutex::new(HashMap::new());
+                let player_index = utils::slice_index(data, &packet::PLAYER_KEY);
+                if let Some(pi) = player_index {
+                    reg_data = &data[0..=pi];
+                };
+                let a = async || -> Result<()> {
+                    let mut arr = reg_data.split(|byte| byte == &0x00u8).collect::<Vec<&[u8]>>();
+                    if arr.len() % 2 != 0 {
+                        arr.pop();
+                    }
+                    let mut i: usize = 1;
+                    for k in arr.iter().step_by(2) {
+                        raw_data
+                            .lock().await
+                            .insert(str::from_utf8(*k).expect("Unable to decode key string"),
+                                    str::from_utf8(arr[i]).expect("Unable to decode value string").to_string());
+                        i += 2;
+                    }
+                    Ok(())
+                };
+                let b = async || -> Result<()> {
+                    if let Some(pi) = player_index {
+                        if pi+packet::PLAYER_KEY.len() < data.len()-3 {
+                            let tmp = &data[pi + packet::PLAYER_KEY.len()..data.len() - 3];
+                            players.lock().await.extend(tmp.split(|byte| byte == &0x00u8)
+                                .map(|arr| str::from_utf8(arr).expect("Failure decoding string!").to_string()));
+                        }
+                    };
+                    Ok(())
+                };
+                tokio::try_join!(a(), b())?;
+                let reader = raw_data.lock().await;
+                let players = players.lock().await.to_vec();
+                let rooms_json = reader.get("rooms").expect("").clone();
+                let deserialized: Vec<Game> = serde_json::from_str(&rooms_json).unwrap();
+                Ok(ElementXQuery {
+                    server_software: reader.get("server_engine").expect("Failed to find server_engine").clone(),
+                    plugins: reader.get("plugins").expect("Failed to find plugins").clone(),
+                    version: reader.get("version").expect("Failed to find version").clone(),
+                    whitelist: reader.get("whitelist").expect("Failed to find whitelist").clone(),
+                    players,
+                    player_count: reader.get("numplayers").expect("Failed to find numplayers").parse().expect("Invalid Player Count!"),
+                    max_players: reader.get("maxplayers").expect("Failed to find maxplayers").parse().expect("Invalid Max Player Count!"),
+                    game_name: reader.get("game_id").expect("Failed to find gamename").clone(),
+                    game_mode: reader.get("gametype").expect("Failed to find gametype").clone(),
+                    map_name: reader.get("map").expect("Failed to find map").clone(),
+                    host_name: reader.get("hostname").expect("Failed to find server_engine").clone(),
+                    host_ip: reader.get("hostip").expect("Failed to find hostip").clone(),
+                    host_port: reader.get("hostport").expect("Failed to find server_engine").parse().expect("Invalid Host Port!"),
+                    load: reader.get("load").expect("Failed to find load").parse().expect("Invalid extraData: load"),
+                    rooms: deserialized.to_vec().iter().map(|x| format!("[{}] {}({}) {}/{} - {}", x.room, x.name, x.map.display, x.player.current, x.player.max, x.phase)).collect(),
+                    restart: reader.get("restart").expect("Failed to find restart").parse().expect("Invalid extraData: restart")
+                })
+            },
+            _ => Err(Error::new(ErrorKind::InvalidData, "Unexpected packet was received while awaiting 0x00 STAT"))
+        }
     }
 
     /// A slightly slower query implementation, but returns more detailed data.
