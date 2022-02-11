@@ -27,10 +27,11 @@ use crate::model::{ShortQuery, LongQuery, packet, RakNetPong, ElementXQuery};
 use crate::model::elementx_json::Game;
 use std::time::{SystemTime, UNIX_EPOCH};
 use byteorder::{WriteBytesExt, BigEndian, LittleEndian, ReadBytesExt};
-use rand::Rng;
+use rand::{Rng, SeedableRng};
 use std::str;
 use std::collections::HashMap;
 use std::fmt::format;
+use rand::rngs::StdRng;
 use tokio::sync::Mutex;
 use crate::utils::read_nulltermed_str;
 
@@ -118,7 +119,7 @@ impl<A: ToSocketAddrs> Client<A> {
     /// ```
     pub async fn raknet_ping(&self) -> Result<RakNetPong> {
         // Writing
-        let mut random = rand::thread_rng();
+        let mut random = StdRng::from_entropy();
         let offline_msg_data = Vec::from_hex("00ffff00fefefefefdfdfdfd12345678").expect("Failed to read binary string!");
         {
             //Initalize Buf with 0x01 being the ID_UNCONNECTED_PING
@@ -161,7 +162,7 @@ impl<A: ToSocketAddrs> Client<A> {
     }
 
     pub async fn elementx_query(&self) -> Result<ElementXQuery> {
-        let mut random = rand::thread_rng();
+        let mut random = StdRng::from_entropy();
         let ses_id: i32 = random.gen();
         let challenge_token = self.gen_challenge_token(ses_id).await?;
         //Send Request
@@ -268,7 +269,7 @@ impl<A: ToSocketAddrs> Client<A> {
     /// println!("players: {:?}", data.players) // EX: players: ["Timmy", "Bobby2454"]
     /// ```
     pub async fn long_query(&self) -> Result<LongQuery> {
-        let mut random = rand::thread_rng();
+        let mut random = StdRng::from_entropy();
         let ses_id: i32 = random.gen();
         let challenge_token = self.gen_challenge_token(ses_id).await?;
         //Send Request
@@ -368,7 +369,7 @@ impl<A: ToSocketAddrs> Client<A> {
     /// println!("players: {}", data.players) // EX: players: 2
     /// ```
     pub async fn short_query(&self) -> Result<ShortQuery> {
-        let mut random = rand::thread_rng();
+        let mut random = StdRng::from_entropy();
         let ses_id: i32 = random.gen();
         let challenge_token = self.gen_challenge_token(ses_id).await?;
         {
